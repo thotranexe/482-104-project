@@ -13,7 +13,8 @@ import string
 from sklearn.model_selection import train_test_split
 from transformers import DistilBertTokenizer, AdamW
 from transformers import DistilBertModel, DistilBertConfig, DistilBertForSequenceClassification
-
+import streamlit as st
+st.write("Please be patient model training takes 20+ mins :P")
 #config constants
 SEED = 42
 EPOCHS = 2
@@ -168,21 +169,21 @@ optimizer = AdamW(model.parameters(), lr=2e-5)
 best_val_loss = 9999.
 print('====START TRAINING====')
 #training here
-#for epoch in tqdm(range(EPOCHS)):
-#     print('-' * 10)
-#     train_epoch_for_hf(model=model, data_loader=train_dataloader, optimizer=optimizer, device=device)
-#     _, tr_loss = evaluate_for_hf(model=model, data_loader=train_dataloader, device=device)
-#     val_pred, val_loss = evaluate_for_hf(model=model, data_loader=val_dataloader, device=device)
-#     y_pred_np = val_pred.numpy()
-#     val_auc = roc_auc_score(df_val[labels].to_numpy(), y_pred_np)
-#     if val_loss < best_val_loss:
-#         best_val_loss = val_loss
-#         torch.save(model.state_dict(), 'distill_bert.pt')
-#     print(f'Epoch {epoch + 1}/{EPOCHS}', f'train loss: {tr_loss:.4},', f'val loss: {val_loss:.4},', f'val auc: {val_auc:.4}')
+for epoch in tqdm(range(EPOCHS)):
+     print('-' * 10)
+     train_epoch_for_hf(model=model, data_loader=train_dataloader, optimizer=optimizer, device=device)
+     _, tr_loss = evaluate_for_hf(model=model, data_loader=train_dataloader, device=device)
+     val_pred, val_loss = evaluate_for_hf(model=model, data_loader=val_dataloader, device=device)
+     y_pred_np = val_pred.numpy()
+     val_auc = roc_auc_score(df_val[labels].to_numpy(), y_pred_np)
+     if val_loss < best_val_loss:
+         best_val_loss = val_loss
+         #torch.save(model.state_dict(), 'distill_bert.pt')
+     print(f'Epoch {epoch + 1}/{EPOCHS}', f'train loss: {tr_loss:.4},', f'val loss: {val_loss:.4},', f'val auc: {val_auc:.4}')
 # once model is saved and generated no need to re run :)
-model = DistilBertForSequenceClassification(config)
-model.load_state_dict(torch.load('./distill_bert.pt'))
-model = model.to(device)
+#model = DistilBertForSequenceClassification(config)
+#model.load_state_dict(torch.load('./distill_bert.pt'))
+#model = model.to(device)
 #test model here
 test_pred, test_loss = evaluate_for_hf(model=model, data_loader=test_dataloader, device=device)
 print('====TEST RESULT====')
@@ -201,5 +202,5 @@ prediction, _ = evaluate_for_hf(model=model, data_loader=test_src_dataloader, de
 prediction = torch.sigmoid(prediction).numpy()
 
 sub[labels] = prediction
-
-sub.head()
+sub.insert(1,"tweet",data.comment_text,True)
+st.daatframe(sub)

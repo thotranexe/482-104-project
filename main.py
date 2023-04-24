@@ -1,160 +1,205 @@
-import pandas as pd
 import numpy as np
-from tqdm import tqdm
+import pandas as pd
 import torch
-from torch.optim import AdamW
-from torch.utils.data import DataLoader
-from torch.nn import BCEWithLogitsLoss
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from transformers import get_scheduler, DataCollatorWithPadding
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.utils.data import TensorDataset, DataLoader, Dataset
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import KFold
-from accelerate import Accelerator
-import streamlit as st
+import re
+from tqdm.notebook import tqdm
+from typing import *
+import string
+from sklearn.model_selection import train_test_split
+from transformers import DistilBertTokenizer, AdamW
+from transformers import DistilBertModel, DistilBertConfig, DistilBertForSequenceClassification
 
-st.write("please be patient the code takes a while :)")
-
-checkpoint = "distilbert-base-uncased"
-tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-
-TOKENIZE = True
-if TOKENIZE:
-    df = pd.read_csv('./data/train.csv')
-    tokens = [tokenizer(a, max_length=512, truncation=True) for a in tqdm(df.comment_text.values)] 
-    df['tokens'] = tokens
-    df.to_pickle('df.pkl')
-else:
-    df = pd.read_pickle('df.pkl')
-
-label_cols = list(df.iloc[:,2:-1].columns.values)
-print(df[label_cols].sum(axis=1).max())
-label_cols
-
-kf = KFold(n_splits=2)
-folds = dict()
-for i, (train_index, test_index) in enumerate(kf.split(df)):
-    folds[i] = {'train':df.iloc[train_index], 'test':df.iloc[test_index]}
-
-train_datasets = []
-eval_datasets = []
-models =[]
-NUM_LABELS = len(label_cols)
-for i in folds:
-    train_y = folds[i]['train'][label_cols].values
-    valid_y = folds[i]['test'][label_cols].values
-
-    train_dataset = folds[i]['train'].tokens.values
-    for a,b in zip(train_dataset, train_y):
-         a['label'] = b
-    train_datasets.append(train_dataset)
-
-    eval_dataset = folds[i]['test'].tokens.values
-    for a,b in zip(eval_dataset, valid_y):
-         a['label'] = b
-    eval_datasets.append(eval_dataset)
-    models.append(AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=NUM_LABELS))
-train_datasets=np.array(train_datasets)
-eval_datasets=np.array(eval_datasets)
-
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-
+#config constants
+SEED = 42
+EPOCHS = 2
+SEQ_SIZE = 150
 BATCH_SIZE = 32
-data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
-num_epochs = 2
+PRE_TRAINED_MODEL_NAME = "distilbert-base-uncased"
 
-for i in range(len(models)):
-    AUCs = []
-    print('model', i)
-    models[i].to(device)
-    optimizer = AdamW(models[i].parameters(), lr=1e-4)
+#import all data
+data=pd.read_csv('./data/train.csv',engine='python',encoding='utf-8', error_bad_lines=False)
+test=pd.read_csv('./data/test.csv',engine='python',encoding='utf-8', error_bad_lines=False)
+test_labels=pd.read_csv('./data/test_labels.csv',engine='python',encoding='utf-8', error_bad_lines=False)
+sub=pd.read_csv('./data/sample_submission.csv',engine='python',encoding='utf-8', error_bad_lines=False)
 
-    train_dataloader = DataLoader(
-        train_datasets[i],
-        batch_size=BATCH_SIZE,
-        collate_fn = data_collator
-    )
+#setup data
+data.drop(columns='id',inplace=True)
+labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
 
-    eval_dataloader = DataLoader(
-        eval_datasets[i],
-        batch_size=BATCH_SIZE,
-        collate_fn = data_collator
-    )
+#text proccessing
+def cleanString(comment: str) -> str:
+    #contrationcs
+    comment = re.sub('n\'t', ' not', comment) 
+    comment = re.sub('\'m', ' am', comment)
+    comment = re.sub('\'ve', ' have', comment)
+    comment = re.sub('\'s', ' is', comment)
+    #newline
+    comment = comment.replace('\n', ' \n ')
+    comment = comment.replace(r'([*!?\'])\1\1{2,}',r'\1\1\1')    
+    comment = comment.replace(r'[0-9]', '') 
+    comment = re.sub('[^a-zA-Z%]', ' ', comment)
+    comment = re.sub('%', '', comment)
+    comment = re.sub(r' +', ' ', comment)
+    comment = re.sub(r'\n', ' ', comment)
+    comment = re.sub(r' +', ' ', comment)
+    comment = comment.strip()
+    return comment
 
-    accelerator = Accelerator()
-    train_dataloader, eval_dataloader, models[i], optimizer = accelerator.prepare(
-        train_dataloader, eval_dataloader, models[i], optimizer
-    )
+data.comment_text=data.comment_text.map(cleanString)
 
-    num_training_steps = num_epochs * len(train_dataloader)
-    lr_scheduler = get_scheduler(
-        "linear",
-        optimizer=optimizer,
-        num_warmup_steps=0,
-        num_training_steps=num_training_steps,
-    )
-    
-    train_loss_set = []
-    for epoch in range(num_epochs):
-        print(f"epoch: {epoch}")
-        #TRAINING
-        tr_loss = 0
-        nb_tr_examples, nb_tr_steps = 0, 0
-        num_training_steps = len(train_dataloader)
-        progress_bar = tqdm(range(num_training_steps))
-        models[i].train()
-        for batch in train_dataloader:
-            optimizer.zero_grad()
-            outputs = models[i](
-                batch['input_ids'],
-                attention_mask=batch['attention_mask'])
-            logits = outputs[0]
-            loss_func = BCEWithLogitsLoss() 
-            loss = loss_func(logits.view(-1, NUM_LABELS),
-                             batch['labels'].type_as(logits).view(-1, NUM_LABELS))
-            train_loss_set.append(loss.item())    
-            accelerator.backward(loss)
+#tokenizer
+tokenizer = DistilBertTokenizer.from_pretrained(PRE_TRAINED_MODEL_NAME)
+
+token_lens = []
+
+for txt in tqdm(data.comment_text):
+  tokens = tokenizer.encode(txt, max_length=512)
+  token_lens.append(len(tokens))
+
+#test train split
+df_train, df_test = train_test_split(data, test_size=0.15, random_state=SEED)
+df_val, df_test = train_test_split(df_test, test_size=0.5, random_state=SEED)
+#set pytorch dataset
+class CommentDataset(Dataset):
+    def __init__(self, comments, targets, tokenizer, max_len):
+        assert len(comments) == len(targets)
+        self.comments = comments
+        self.targets = targets
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+
+    def __len__(self):
+        return len(self.comments)
+
+    def __getitem__(self, item):
+        comment = str(self.comments[item])
+        target = self.targets[item]
+
+        encoding = self.tokenizer.encode_plus(comment,
+                                              add_special_tokens=True,
+                                              max_length=self.max_len,
+                                              return_token_type_ids=False,
+                                              pad_to_max_length=True,
+                                            #   padding='max_length',
+                                              return_attention_mask=True,
+                                              return_tensors='pt',
+                                             )
+        return {'review_text': comment,
+                'input_ids': encoding['input_ids'].flatten(),
+                'attention_mask': encoding['attention_mask'].flatten(),
+                'targets': torch.tensor(target, dtype=torch.long)}
+
+def create_data_loader(df: pd.DataFrame, tokenizer, max_len: int, batch_size: int):
+    ds = CommentDataset(comments=df.comment_text.to_numpy(),
+                        targets=df[labels].to_numpy(),
+                        tokenizer=tokenizer,
+                        max_len=max_len)
+
+    return DataLoader(ds, batch_size=batch_size)
+
+#helper function to set seed
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(seed)
+
+set_seed(SEED)
+
+#gpu usage
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+config = DistilBertConfig.from_pretrained(PRE_TRAINED_MODEL_NAME)
+config.num_labels = len(labels)
+config.problem_type = "multi_label_classification"
+config.classifier_dropout = 0.2
+config.return_dict = True
+
+model = DistilBertForSequenceClassification(config)
+model = model.to(device)
+
+train_dataloader = create_data_loader(df=df_train, tokenizer=tokenizer, max_len=SEQ_SIZE, batch_size=BATCH_SIZE)
+val_dataloader = create_data_loader(df=df_val, tokenizer=tokenizer, max_len=SEQ_SIZE, batch_size=1)
+test_dataloader = create_data_loader(df=df_test, tokenizer=tokenizer, max_len=SEQ_SIZE, batch_size=1)
+
+def train_epoch_for_hf(model, data_loader: DataLoader, device: torch.device, optimizer):
+    """
+    hf = huggingface.
+    """
+    model.train()
+
+    for batch in tqdm(data_loader):
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        targets = batch["targets"].float().to(device)
+        
+        optimizer.zero_grad()
+
+        with torch.set_grad_enabled(True):
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=targets)
+            loss = outputs.loss
+            loss.backward()
             optimizer.step()
-            lr_scheduler.step()
-            tr_loss += loss.item()
-            nb_tr_examples += batch['input_ids'].size(0)
-            nb_tr_steps += 1
-            progress_bar.update(1)
-        print("Train loss: {}".format(tr_loss/nb_tr_steps))
 
-df_test = pd.read_csv('./data/test.csv')
+def evaluate_for_hf(model, data_loader: DataLoader, device: torch.device):
+    model.eval()
+    losses = []
+    score = None
 
-tokens_test = [tokenizer(a, max_length=512, truncation=True) for a in tqdm(df_test.comment_text)]
+    for idx, batch in enumerate(tqdm(data_loader)):
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        targets = batch["targets"].float().to(device)
+        with torch.set_grad_enabled(False):
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=targets)
+            if idx == 0:
+                score =  outputs.logits.cpu()
+            else:
+                score = torch.cat((score, outputs.logits.cpu()))
+            losses.append(outputs.loss.item())
+    return score, np.mean(losses)
 
-test_dataloader = DataLoader(
-    tokens_test,
-    batch_size=BATCH_SIZE,
-    collate_fn = data_collator
-)
+optimizer = AdamW(model.parameters(), lr=2e-5)
+best_val_loss = 9999.
+print('====START TRAINING====')
+#training here
+#for epoch in tqdm(range(EPOCHS)):
+#     print('-' * 10)
+#     train_epoch_for_hf(model=model, data_loader=train_dataloader, optimizer=optimizer, device=device)
+#     _, tr_loss = evaluate_for_hf(model=model, data_loader=train_dataloader, device=device)
+#     val_pred, val_loss = evaluate_for_hf(model=model, data_loader=val_dataloader, device=device)
+#     y_pred_np = val_pred.numpy()
+#     val_auc = roc_auc_score(df_val[labels].to_numpy(), y_pred_np)
+#     if val_loss < best_val_loss:
+#         best_val_loss = val_loss
+#         torch.save(model.state_dict(), 'distill_bert.pt')
+#     print(f'Epoch {epoch + 1}/{EPOCHS}', f'train loss: {tr_loss:.4},', f'val loss: {val_loss:.4},', f'val auc: {val_auc:.4}')
+# once model is saved and generated no need to re run :)
+model = DistilBertForSequenceClassification(config)
+model.load_state_dict(torch.load('./distill_bert.pt'))
+model = model.to(device)
+#test model here
+test_pred, test_loss = evaluate_for_hf(model=model, data_loader=test_dataloader, device=device)
+print('====TEST RESULT====')
+print(f'Log loss: {test_loss:.5}')
+y_pred_np = test_pred.numpy()
+test_auc = roc_auc_score(df_test[labels].to_numpy(), y_pred_np)
+print(f'ROC AUC: {test_auc:.5}')
 
-fold_preds = []
-progress_bar = tqdm(range(len(test_dataloader)))
-for a in models:
-    a.to(device)
-    preds = []
-    a.eval()
-    for batch in tqdm(test_dataloader):
-        batch = {k: v.to(device) for k, v in batch.items()}
-        with torch.no_grad():
-            outputs = a(**batch)
-            logits = outputs.logits
-            pred_probs = torch.sigmoid(logits)
-            pred_probs = pred_probs.tolist()
-            preds.extend(pred_probs)
-        progress_bar.update(1)
-    fold_preds.append(preds)
+test_src_id = test.iloc[:, 0]
+test.drop(columns='id', inplace=True)
+test_labels.drop(columns='id', inplace=True)
+test_src = pd.concat((test, test_labels), axis=1)
 
-dfs = [pd.DataFrame(a) for a in fold_preds]
-mean_probs = sum(dfs)/len(dfs)
-labels = mean_probs
+test_src_dataloader = create_data_loader(df=test_src, tokenizer=tokenizer, max_len=SEQ_SIZE, batch_size=1)
+prediction, _ = evaluate_for_hf(model=model, data_loader=test_src_dataloader, device=device)
+prediction = torch.sigmoid(prediction).numpy()
 
-result = pd.DataFrame()
-result['id'] = df_test.id
-for a,b in zip(label_cols, labels):
-    result[a]=labels[b]
-result.insert(1,"tweet",df['comment_text'],True)
-st.dataframe(result)
+sub[labels] = prediction
+
+sub.head()

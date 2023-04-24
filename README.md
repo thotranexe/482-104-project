@@ -1,3 +1,3 @@
-# 482-104-project
-[HF SPACE LINK HERE](https://huggingface.co/spaces/thotranexe/toxicity)
-the hugging face space works it just takes a very long time to train the model due to limited space. Ideally i would like to upload the PT file to skip the traing in order to display what was asked. the code itself works and take 30 minutes to run on a google colab. due to the main file beng a py I wasnt able to save any inputs. If i could have any suggestions to reduce the run time that would be greatly appreciated.
+[hugging face here](https://huggingface.co/spaces/thotranexe/toxicity)
+
+the code works it just takes a very long while to load. Wanted to save the model to load it in hugging face but file was too large for git. I can show you the output if need be to prove the code works.

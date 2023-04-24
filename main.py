@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 from sklearn.metrics import roc_auc_score
 import re
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 from typing import *
 import string
 from sklearn.model_selection import train_test_split
@@ -203,4 +203,4 @@ prediction = torch.sigmoid(prediction).numpy()
 
 sub[labels] = prediction
 sub.insert(1,"tweet",data.comment_text,True)
-st.daatframe(sub)#replace with sub.head to see it work
+st.daatframe(sub)

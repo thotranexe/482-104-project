@@ -203,4 +203,4 @@ prediction = torch.sigmoid(prediction).numpy()
 
 sub[labels] = prediction
 sub.insert(1,"tweet",data.comment_text,True)
-st.daatframe(sub)
+st.daatframe(sub)#replace with sub.head to see it work

@@ -1,6 +1,6 @@
-### [HF space here](https://huggingface.co/spaces/thotranexe/toxicity)
-
-##### The code works it just takes a very long while to load on the hugging face due to the computing limations imposed by the space. I wanted to save the model to load it in hugging face but file was too large for git. I would greatly appreciate any reccomendations to bypass this issue. Below is attached proof that the code is functional if you dont want to wait 7+ hours for the HF spacce to finish training the model :)
-![alt text](https://github.com/thotranexe/482-104-project/blob/milestone3/proog.png)
-
-edit: I was able to bypass that all by saving the result as a csv and just using that to skip the training and testing done 
+[webapp](https://sites.google.com/view/tweetbert/home)
+[model](https://sites.google.com/view/tweetbert/home)
+[space](https://huggingface.co/spaces/thotranexe/toxicity)
+[webapp-video](https://www.youtube.com/watch?v=HyhbbFm9CcQ)
+I ended up just saving the output as a csv and using that to display, But just in case you wanted to run the model, i uploaded the model to HF as well that way you could just skip the training.
+Overall i believe the model is good, but it struggles to classify all caps tweets, which im not sure why since I used the uncased version for the model. other than that its fairly accurate. I was unsure what to put on the landing site other than the model and space so I apologize if thats not up to par.
